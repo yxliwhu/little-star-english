@@ -123,9 +123,9 @@ function shell(content) {
 function catalog() {
   const lastId = readJSON('little-star-last-unit', 1);
   const last = units.find(u => u.id === lastId) || units[0];
-  const lastState = readState(last);
   const touched = units.filter(u => { const s = readState(u); return s.seen.length || s.completed.length || s.attempts.length; }).length;
-  return shell(`<section class="catalog-hero"><div><div class="eyebrow">A LITTLE ENGLISH, EVERY DAY</div><h1>${safe(profile.name)}的英语小世界</h1><p>十二段小冒险，慢慢听、慢慢认、勇敢说。<br>点一个喜欢的单元，就可以出发啦。</p><button class="primary" data-resume="${last.id}">${touched ? '继续上次的小冒险' : '从 Hello 开始'} →</button></div><div class="catalog-art" aria-hidden="true"><span class="orbit o1">🎒</span><span class="orbit o2">🐘</span><span class="orbit o3">🍎</span><div class="catalog-star">✦</div><span class="catalog-sticker">Hello, world!</span></div></section>
+  const resumeUnit = touched ? last : units[0];
+  return shell(`<section class="catalog-hero"><div><div class="eyebrow">A LITTLE ENGLISH, EVERY DAY</div><h1>${safe(profile.name)}的英语小世界</h1><p>十二段小冒险，慢慢听、慢慢认、勇敢说。<br>点一个喜欢的单元，就可以出发啦。</p><button class="primary" data-resume="${resumeUnit.id}">${touched ? '继续上次的小冒险' : '从 Hello 开始'} →</button></div><div class="catalog-art" aria-hidden="true"><span class="orbit o1">🎒</span><span class="orbit o2">🐘</span><span class="orbit o3">🍎</span><div class="catalog-star">✦</div><span class="catalog-sticker">Hello, world!</span></div></section>
     <div class="section-head"><h2>选一个单元，开始吧</h2><small>${touched ? `已经探索 ${touched} / 12 个单元` : '每个单元都有听、认、说'}</small></div>
     <section class="unit-grid" aria-label="选择学习单元">${units.map(u => {
       const s = readState(u), total = maxStars(u), words = Object.values(u.groups).reduce((n,g) => n + g.items.length, 0);
