@@ -16,7 +16,7 @@ let routeKey = null, toastTimer, activeAudio = null;
 let recording = false, recorder = null, stream = null, recordUrl = null;
 let recordAudio = null, recordTimer, recordGeneration = 0;
 let recordHeld = false, recordPending = false, recordFallback = false, recordPointer = null, recordPhase = 'idle';
-let voicePlayer = null;
+let voicePlayer = null, micClickGuardUntil = 0;
 const SPEAK_GUIDE = '先听一听，再按住小话筒说英语。说完松开，就会听到自己的声音。';
 const MIC_READY = '准备好啦！按住小话筒，说完再松开。';
 const MIC_HELP = '请家长帮忙开启麦克风。也可以先听示范，直接开口说。';
@@ -475,7 +475,7 @@ function handle(e) {
     case 'model': playModel(); break;
     case 'speak-guide': announcePage(); break;
     case 'next-phrase': nextPhrase(); break;
-    case 'record': if (e.detail === 0) { if (recording || recordPending) releaseRecord(); else record(); } break;
+    case 'record': if (e.detail === 0 && Date.now() >= micClickGuardUntil && !['touch','pen'].includes(e.pointerType)) { if (recording || recordPending) releaseRecord(); else record(); } break;
     case 'play-record': replayRecord(); break;
     case 'said': markSaid(); break;
     case 'parent': parent(); break;
@@ -497,21 +497,22 @@ function render() {
 app.addEventListener('pointerdown', e => {
   const mic = e.target.closest('[data-action="record"]');
   if (!mic || e.button !== 0 || recordHeld || recordPending) return;
-  e.preventDefault(); record(e.pointerId);
+  e.preventDefault(); micClickGuardUntil = Date.now()+700; record(e.pointerId);
   try { mic.setPointerCapture(e.pointerId); } catch {}
 });
 for (const type of ['pointerup','pointercancel','lostpointercapture']) document.addEventListener(type,e => {
+  if (e.target?.closest?.('[data-action="record"]') || recordPointer === e.pointerId) micClickGuardUntil = Date.now()+700;
   if (recordPointer !== e.pointerId) return;
   e.preventDefault(); releaseRecord(type !== 'pointerup');
 });
 app.addEventListener('contextmenu',e => { if (e.target.closest('[data-action="record"]')) e.preventDefault(); });
 app.addEventListener('keydown',e => {
   if (!e.target.closest('[data-action="record"]') || ![' ','Enter'].includes(e.key)) return;
-  e.preventDefault(); if (!e.repeat) record();
+  e.preventDefault(); micClickGuardUntil = Date.now()+700; if (!e.repeat) record();
 });
 app.addEventListener('keyup',e => {
   if (!e.target.closest('[data-action="record"]') || ![' ','Enter'].includes(e.key)) return;
-  e.preventDefault(); releaseRecord();
+  e.preventDefault(); micClickGuardUntil = Date.now()+700; releaseRecord();
 });
 app.addEventListener('click',handle);
 app.addEventListener('change', e => { if (e.target.id === 'learning-language') changeLanguage(e.target.value); });
