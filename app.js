@@ -16,7 +16,7 @@ let routeKey = null, toastTimer, activeAudio = null;
 let recording = false, recorder = null, stream = null, recordUrl = null;
 let recordAudio = null, recordTimer, recordGeneration = 0;
 let recordHeld = false, recordPending = false, recordFallback = false, recordPointer = null, recordPhase = 'idle';
-let voicePlayer = null, micClickGuardUntil = 0;
+let voicePlayer = null, micClickGuardUntil = 0, voiceGeneration = 0;
 const SPEAK_GUIDE = '先听一听，再按住小话筒说英语。说完松开，就会听到自己的声音。';
 const MIC_READY = '准备好啦！按住小话筒，说完再松开。';
 const MIC_HELP = '请家长帮忙开启麦克风。也可以先听示范，直接开口说。';
@@ -57,6 +57,8 @@ function toast(text) {
   toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 3400);
 }
 function silence() {
+  voiceGeneration++;
+  window.LEARNING_VOICE_CACHE?.pin(null);
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   activeAudio?.pause(); activeAudio = null;
   recordAudio?.pause();
@@ -65,9 +67,44 @@ function silence() {
 }
 function playClip(file, fallback, after = null) {
   const player = voicePlayer || (voicePlayer = new Audio());
-  player.pause(); player.src = file; activeAudio = player;
-  player.onended = () => { if (activeAudio === player) { activeAudio = null; after?.(); } };
-  player.play().catch(() => { if (activeAudio === player) toast(tr(fallback)); });
+  const generation = ++voiceGeneration;
+  const cache = window.LEARNING_VOICE_CACHE;
+  player.pause(); player.onended = null; activeAudio = player; cache?.pin(file);
+  const current = () => generation === voiceGeneration && activeAudio === player && !document.hidden && !recording && !recordPending;
+  const start = source => {
+    if (!current()) return;
+    if (player.src !== source) player.src = source;
+    else { try { player.currentTime = 0; } catch { player.src = source; } }
+    player.onended = () => {
+      if (!current() || player.ended === false) return;
+      activeAudio = null; cache?.pin(null); after?.();
+    };
+    player.play().catch(error => { if (current() && error?.name !== 'AbortError') toast(tr(fallback)); });
+  };
+  if (!cache) { start(file); return; }
+  const ready = cache.peek(file);
+  if (ready) { start(ready); return; }
+  // Keep playback permission on this same element while its first file downloads.
+  player.src = cache.silence; player.play().catch(() => {});
+  cache.load(file, {urgent:true}).then(source => start(source || file));
+}
+function prepareUnitVoices() {
+  const cache = window.LEARNING_VOICE_CACHE, audio = window.LEARNING_AUDIO;
+  if (!cache || !audio) return;
+  const guides = audio.guides?.[I18N.locale] || {};
+  const english = audio.english || {};
+  const common = ['找到了，真棒！','再试一次，点小喇叭听一听。','勇敢开口，真棒！'];
+  const instruction = page === 'speak' ? SPEAK_GUIDE : page === 'read' ? '看看卡片上的英文单词。点卡片可以听英语。准备好了，点开始看词找图。' : '点一张卡片听英语。都听过以后，点开始听音找图。';
+  const focus = unit?.groups[group]?.items || [];
+  const models = unit ? phrases() : [];
+  cache.preload([
+    guides[instruction], english[models[selectedPhrase]?.model],
+    ...focus.map(item => english[item.say]),
+    ...common.map(text => guides[text]),
+    ...models.map(phrase => english[phrase.model]),
+    ...Object.values(unit?.groups || {}).flatMap(section => section.items.map(item => english[item.say])),
+    ...Object.values(guides)
+  ]);
 }
 function say(text, after = null) {
   silence();
@@ -335,7 +372,7 @@ async function record(pointerId = null) {
   recordHeld = true; recordPointer = pointerId; recordPending = true;
   recordStatus = '请家长允许麦克风，准备好就能说啦';
   // Unlock this same audio element during the press for automatic iPad replay.
-  const playback = new Audio('assets/voice/tap-silence.wav'); recordAudio = playback;
+  const playback = new Audio(window.LEARNING_VOICE_CACHE?.silence || 'assets/voice/tap-silence.wav'); recordAudio = playback;
   playback.play().catch(() => {});
   updateRecordUI();
   try {
@@ -505,6 +542,7 @@ function render() {
   if (description) description.content = tr('十二个英语小冒险，一起听、认、说。');
   document.title = unit ? l10n`小星星英语 · Unit ${unit.id} ${unit.title}` : tr('小星星英语 · 单元目录');
   app.innerHTML = page === 'catalog' ? catalog() : page === 'home' ? home() : page === 'listen' || page === 'read' ? learning() : page === 'speak' ? speak() : library();
+  prepareUnitVoices();
 }
 app.addEventListener('pointerdown', e => {
   const mic = e.target.closest('[data-action="record"]');
