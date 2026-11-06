@@ -160,7 +160,7 @@ function shell(content) {
     ${unit ? `<div class="current-unit"><span>UNIT ${String(unit.id).padStart(2,'0')}</span><b>${safe(unit.zhTitle)}</b></div>` : ''}
     <nav class="nav" aria-label="主导航">${nav.map(([id,icon,name]) => `<button data-go="${id}" class="${page === id ? 'active' : ''}" ${page === id ? 'aria-current="page"' : ''}><span class="ico">${icon}</span>${name}</button>`).join('')}</nav>
     <div class="side-note"><span style="font-size:24px">🌱</span><b>每天一点点</b>听见、认出、勇敢说。<br>跟着自己的节奏就好。</div><button class="parent-button" data-action="parent">⚙ 家长角落</button></aside>
-    <main class="main"><header class="topbar"><div class="crumb">KID’S BOX 1 <b>${unit ? `UNIT ${String(unit.id).padStart(2,'0')} · ${safe(unit.title)}` : 'MY ENGLISH ADVENTURE'}</b></div><div class="topbar-tools">${languagePicker()}<div class="star-pill">${unit ? l10n`✦ ${stars()} / ${maxStars(unit)} 颗星` : tr('✦ 12 个小世界')}</div></div></header>${content}</main></div>`;
+    <main class="main"><header class="topbar"><div class="crumb">KID’S BOX 1 <b>${unit ? `UNIT ${String(unit.id).padStart(2,'0')} · ${safe(unit.title)}` : 'MY ENGLISH ADVENTURE'}</b></div><div class="topbar-tools">${languagePicker()}<div class="star-pill">${unit ? l10n`✦ ${stars()} / ${maxStars(unit)} 颗星` : tr('✦ 12 个小世界')}</div></div></header>${content}${legalFooter()}</main></div>`;
 }
 function catalog() {
   const lastId = readJSON('little-star-last-unit', 1);
@@ -401,17 +401,18 @@ function library() {
     <div class="section-head"><h2>课本原声小书架</h2><small>${unit.tracks.length} 段原声 · 可以反复听</small></div><div class="audio-list">${unit.tracks.map(t => l10n`<div class="audio-row"><div><b>${safe(t.title)}</b><small>课本 p.${t.page} · 音轨 ${t.id}</small></div><button class="secondary" data-track="${t.id}" aria-label="播放第${t.page}页音轨${t.id}">▷ 听原声</button></div>`).join('')}</div><p class="parent-copy">教材音视频来自你提供的 Kid’s Box New Generation 1 材料。${voiceCredit()}。</p>`);
 }
 let lastFocus = null;
-function modal(content) {
+function modal(content, options = {}) {
   if (recording || recordPending) { clearRecord(); updateRecordUI(); }
   closeModal(); silence(); lastFocus = document.activeElement;
-  const el = document.createElement('div'); el.className = 'overlay';
-  el.innerHTML = l10n`<section class="modal" role="dialog" aria-modal="true" aria-label="内容窗口">${content}</section>`;
+  const el = document.createElement('div'); el.className = 'overlay'+(options.book ? ' book-overlay' : '');
+  el.innerHTML = l10n`<section class="modal${options.book ? ' book-reader' : ''}" role="dialog" aria-modal="true" aria-label="内容窗口">${content}</section>`;
   document.body.append(el); document.body.classList.add('modal-open');
   el.addEventListener('click', e => { if (e.target === el || e.target.closest('[data-close]')) closeModal(); });
   el.querySelector('button,input')?.focus();
 }
 function closeModal() {
   const el = $('.overlay'); if (!el) return;
+  if (el.classList.contains('book-overlay')) window.LEARNING_BOOK_READER?.destroy();
   el.querySelectorAll('video,audio').forEach(m => m.pause()); el.remove(); document.body.classList.remove('modal-open'); silence();
   if (lastFocus?.isConnected) lastFocus.focus(); lastFocus = null;
 }
@@ -424,9 +425,18 @@ function media(kind,id) {
 }
 function book(n) {
   if (![...unit.pages,...unit.extraPages].includes(n)) return;
-  modal(modalHead(l10n`我的课本 · 第 ${n} 页`) + l10n`<img class="full-page" src="assets/unit-${String(unit.id).padStart(2,'0')}/page-${n}.webp" alt="Unit ${unit.id} 课本第 ${n} 页"><div class="page-tracks">${unit.tracks.filter(t => t.page === n).map(t => `<p><b>${safe(t.title)}</b></p><audio controls preload="none" src="${t.src}"></audio>`).join('')}</div>`);
-  const audio = $('.modal').querySelectorAll('audio');
-  audio.forEach(a => a.addEventListener('play', () => audio.forEach(other => { if (other !== a) other.pause(); })));
+  if (!window.LEARNING_BOOK_READER) { toast(tr('课本暂时无法打开，请刷新页面。')); return; }
+  modal('',{book:true});
+  window.LEARNING_BOOK_READER.open($('.modal'),{unit,page:n,tr,safe,locale:I18N.locale,onBeforePlay:silence});
+}
+function legalFooter() {
+  const legal=window.LEARNING_LEGAL;
+  if(!legal)return '';
+  return `<footer class="legal-footer"><span>${safe(legal.short(I18N.locale))}</span><button class="text-button" data-action="copyright">${safe(legal.title(I18N.locale))}</button></footer>`;
+}
+function copyright() {
+  if (!window.LEARNING_LEGAL) return;
+  modal(modalHead(window.LEARNING_LEGAL.title(I18N.locale))+window.LEARNING_LEGAL.html(I18N.locale));
 }
 function parent() {
   const allStates = units.map(u => ({u,s:unit?.id === u.id ? state : readState(u)}));
@@ -437,7 +447,7 @@ function parent() {
   modal(modalHead(tr('家长角落')) + l10n`<p class="parent-copy">本地版包含 Unit 1–12。每个单元分别保存学习记录；称呼与年龄在所有单元共用。记录保存在当前浏览器，换设备后不会同步。</p><div class="stats"><div class="stat"><strong>${heard}</strong><small>点听过的词卡</small></div><div class="stat"><strong>${recognised}</strong><small>完成认词练习</small></div><div class="stat"><strong>${attempts}</strong><small>尝试过的小句子</small></div></div><label>孩子的称呼<input id="child-name" maxlength="12" value="${safe(profile.name === '小星星' ? '' : profile.name)}" placeholder="${safe(tr('小星星'))}" autocomplete="off"></label><label>年龄（用于 Unit 1 跟读示范）<select id="child-age"><option value="">暂不设置</option>${COURSE.numbers.map(n => l10n`<option value="${n.number}" ${String(profile.age) === String(n.number) ? 'selected' : ''}>${n.number} 岁</option>`).join('')}</select></label><button class="primary" data-action="save-profile">保存设置</button>
     <h3 style="margin-top:27px">各单元的小脚印</h3><div class="parent-unit-list">${allStates.map(({u,s}) => `<button class="parent-unit-row" data-unit="${u.id}"><span>${u.emoji} Unit ${u.id} · ${safe(u.zhTitle)}</span><b>✦ ${s.completed.length}/${maxStars(u)}</b></button>`).join('')}</div>
     <h3 style="margin-top:27px">最近练习</h3><div class="parent-copy">${recent.length ? recent.map(r => l10n`<p>Unit ${r.u.id} · ${r.mode === 'listen' ? tr('听音找图') : tr('看词找图')} · ${safe(r.u.groups[r.group].name)}：首次答对 ${r.firstCorrect}/${r.total}${r.retryIds.length ? tr('；再练练 ')+r.retryIds.map(id => safe(r.u.groups[r.group].items.find(i => i.id === id)?.word || id)).join('、') : ''}</p>`).join('') : tr('还没有完成的挑战，先让她自由点听也很好。')}</div>
-    <div class="notice">录音只在本页回放，不上传。离开说话页面或切换单元即清除。成功录音或点击“我说好啦”会记录一次开口尝试，没有自动发音评分。</div><p class="parent-copy">${voiceCredit()}。故事屋包含本单元教材原声与视频；偶数单元还收录跨学科、品格和对应复习页。平板建议使用 Safari 或 Chrome。</p>${unit ? l10n`<div class="button-row"><button class="secondary" data-action="reset-ask">重新开始 Unit ${unit.id} 的学习记录</button></div>` : ''}`);
+    <div class="notice">录音只在本页回放，不上传。离开说话页面或切换单元即清除。成功录音或点击“我说好啦”会记录一次开口尝试，没有自动发音评分。</div><p class="parent-copy">${voiceCredit()}。故事屋包含本单元教材原声与视频；偶数单元还收录跨学科、品格和对应复习页。平板建议使用 Safari 或 Chrome。</p>${window.LEARNING_ACCESS ? `<button class="secondary" data-action="lock-site">🔒 ${safe(tr('锁定课程入口'))}</button>` : ''}${unit ? l10n`<div class="button-row"><button class="secondary" data-action="reset-ask">重新开始 Unit ${unit.id} 的学习记录</button></div>` : ''}`);
 }
 function markSaid() {
   if (recording || recordPending) { toast(tr('先松开小话筒，再继续')); return; }
@@ -479,6 +489,8 @@ function handle(e) {
     case 'play-record': replayRecord(); break;
     case 'said': markSaid(); break;
     case 'parent': parent(); break;
+    case 'copyright': copyright(); break;
+    case 'lock-site': window.LEARNING_ACCESS?.lock(); break;
     case 'save-profile':
       profile.name=$('#child-name').value.trim() || '小星星'; profile.age=$('#child-age').value;
       writeJSON(profileKey,profile); closeModal(); render(); toast(tr('设置已保存')); break;
@@ -521,7 +533,7 @@ document.addEventListener('keydown',e => {
   if (e.key === 'Escape') { releaseRecord(true); closeModal(); }
   const overlay=$('.overlay');
   if (e.key === 'Tab' && overlay) {
-    const focusable=[...overlay.querySelectorAll('button,input,select,audio,video,[href]')].filter(el => !el.disabled);
+    const focusable=[...overlay.querySelectorAll('button,input,select,audio,video,[href]')].filter(el => !el.disabled && !el.hidden);
     const first=focusable[0],last=focusable.at(-1);
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }

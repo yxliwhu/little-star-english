@@ -1,0 +1,1 @@
+window.LEARNING_ACCESS_CONFIG = {"salt":"7f6cce82de67f0dffcef1d35085c53cf","iterations":120000,"remember_days":30,"social":{"platform":"小红书","id":"635603864","url":"https://www.xiaohongshu.com/"},"hash":"4eac991f16debbfc01e568eb2a26f18db580bf22471b0e38e6cf4fde9d1afedc","version":"760235001f823bf0"};
