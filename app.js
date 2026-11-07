@@ -1,6 +1,9 @@
 'use strict';
 
 const COURSE = window.LEARNING_COURSE;
+const BOOK = COURSE.book || {id:'1',label:'1'};
+const LAST_KEY = 'little-star-last-unit';
+const nextUnit = () => units[units.findIndex(u => u.id === unit.id)+1];
 const $ = selector => document.querySelector(selector);
 const app = $('#app');
 const safe = text => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -10,6 +13,9 @@ const l10n = (parts, ...values) => parts.map((part, i) => I18N.translate(part, f
 let units = I18N.courseUnits(COURSE.units);
 const pageNames = {home:tr('我的乐园'),listen:tr('听一听'),read:tr('认一认'),speak:tr('说一说'),library:tr('故事屋')};
 const profileKey = 'little-star-profile-v1';
+const learningSettingsKey = 'little-star-learning-settings-v1';
+let learningSettings = {readQuizAudio:readJSON(learningSettingsKey,{}).readQuizAudio === true};
+const feedbackBags = new Map();
 let unit = null, state = null, page = 'catalog', group = '', quiz = null;
 let selectedPhrase = 0, feedback = '', selectedCard = '', isCorrect = false;
 let routeKey = null, toastTimer, activeAudio = null;
@@ -91,9 +97,9 @@ function playClip(file, fallback, after = null) {
 function prepareUnitVoices() {
   const cache = window.LEARNING_VOICE_CACHE, audio = window.LEARNING_AUDIO;
   if (!cache || !audio) return;
-  const guides = audio.guides?.[I18N.locale] || {};
+  const guides = {...audio.guides?.[I18N.locale],...window.LEARNING_FEEDBACK?.guides?.[I18N.locale]};
   const english = audio.english || {};
-  const common = ['找到了，真棒！','再试一次，点小喇叭听一听。','勇敢开口，真棒！'];
+  const common = window.LEARNING_FEEDBACK ? Object.values(window.LEARNING_FEEDBACK.groups).flat() : ['找到了，真棒！','勇敢开口，真棒！'];
   const instruction = page === 'speak' ? SPEAK_GUIDE : page === 'read' ? '看看卡片上的英文单词。点卡片可以听英语。准备好了，点开始看词找图。' : '点一张卡片听英语。都听过以后，点开始听音找图。';
   const focus = unit?.groups[group]?.items || [];
   const models = unit ? phrases() : [];
@@ -107,6 +113,7 @@ function prepareUnitVoices() {
   ]);
 }
 function say(text, after = null) {
+  if (quiz && !quiz.done && quiz.mode === 'read' && !learningSettings.readQuizAudio) return;
   silence();
   const file = window.LEARNING_AUDIO?.english?.[text];
   if (file) { playClip(file, '语音暂时不能播放，可以去故事屋听原声。', after); return; }
@@ -121,9 +128,30 @@ function say(text, after = null) {
 function guide(text, after = null) {
   silence();
   const source = I18N.source(text);
-  const file = window.LEARNING_AUDIO?.guides?.[I18N.locale]?.[source];
+  const file = window.LEARNING_FEEDBACK?.guides?.[I18N.locale]?.[source] || window.LEARNING_AUDIO?.guides?.[I18N.locale]?.[source];
   if (!file) { toast(tr(source)); return; }
   playClip(file, source, after);
+}
+function feedbackMessage(kind) {
+  const fallback={correct:['找到了，真棒！'],retry:['再看看，还可以换一张试试。'],complete:['小挑战完成啦！送你一颗小星星。'],speak:['勇敢开口，真棒！']};
+  const choices=window.LEARNING_FEEDBACK?.groups?.[kind] || fallback[kind];
+  let bag=feedbackBags.get(kind);
+  if(!bag?.remaining.length){
+    const remaining=shuffle(choices);
+    if(remaining.length>1&&remaining.at(-1)===bag?.last)[remaining[0],remaining[remaining.length-1]]=[remaining.at(-1),remaining[0]];
+    bag={remaining,last:bag?.last};feedbackBags.set(kind,bag);
+  }
+  const text=bag.remaining.pop();bag.last=text;return text;
+}
+function encourage(kind) { const text=feedbackMessage(kind);guide(text);return text; }
+function setReadQuizAudio(enabled) {
+  learningSettings.readQuizAudio=enabled===true;silence();writeJSON(learningSettingsKey,learningSettings);
+  const input=$('#read-quiz-audio');if(input)input.setAttribute('aria-checked',String(learningSettings.readQuizAudio));
+  const status=$('[data-read-audio-status]');if(status)status.textContent=tr(learningSettings.readQuizAudio?'已开启':'已关闭');
+  render();toast(tr('设置已保存'));
+}
+function readingSettings() {
+  return `<section class="learning-settings"><h3>${safe(tr('认词测试设置'))}</h3><label class="learning-toggle" for="read-quiz-audio"><span><strong>${safe(tr('认词测试允许听发音'))}</strong><small data-read-audio-status>${safe(tr(learningSettings.readQuizAudio?'已开启':'已关闭'))}</small></span><input id="read-quiz-audio" type="checkbox" role="switch" aria-checked="${learningSettings.readQuizAudio}" aria-describedby="read-audio-help" ${learningSettings.readQuizAudio?'checked':''}></label><p id="read-audio-help" class="parent-copy">${safe(tr('关闭后，认词测试只看单词选图片；词卡学习和听音练习仍可播放。调整后自动保存，各册共用。'))}</p></section>`;
 }
 function voiceCredit() {
   return tr(window.LEARNING_AUDIO?.ready ? '互动提示和英语示范：豆包 AI 配音' : '配音准备中：普通话提示已就绪，英语暂用设备语音');
@@ -163,7 +191,7 @@ function clearRecord() {
   recordUrl = null; recordPhase = 'idle'; recordFallback = false; recordStatus = '按住小话筒，说完再松开';
 }
 function navigate(id = null, next = 'home', nextGroup = '') {
-  const hash = id ? `#unit-${id}/${next}${nextGroup ? '/'+nextGroup : ''}` : '#catalog';
+  const hash = id !== null && id !== undefined ? `#unit-${id}/${next}${nextGroup ? '/'+nextGroup : ''}` : '#catalog';
   if (window.location.hash !== hash) window.location.hash = hash;
   applyRoute();
 }
@@ -181,7 +209,7 @@ function applyRoute() {
     group = unit.groups[match[3]] ? match[3] : state.lastGroup;
     state.lastGroup = group;
     if (page !== 'home') state.last = page;
-    save(); writeJSON('little-star-last-unit', unit.id);
+    save(); writeJSON(LAST_KEY, unit.id);
   }
   render(); window.scrollTo({top:0,behavior:'instant'});
 }
@@ -195,17 +223,17 @@ function shell(content) {
   return l10n`<div class="shell"><aside class="sidebar"><div class="brand"><span class="brand-star">✦</span><div>小星星英语<small>LITTLE STAR ENGLISH</small></div></div>
     <button class="catalog-link ${page === 'catalog' ? 'active' : ''}" data-go="catalog">▦ 单元目录</button>
     ${unit ? `<div class="current-unit"><span>UNIT ${String(unit.id).padStart(2,'0')}</span><b>${safe(unit.zhTitle)}</b></div>` : ''}
-    <nav class="nav" aria-label="主导航">${nav.map(([id,icon,name]) => `<button data-go="${id}" class="${page === id ? 'active' : ''}" ${page === id ? 'aria-current="page"' : ''}><span class="ico">${icon}</span>${name}</button>`).join('')}</nav>
+    <nav class="nav" aria-label="主导航">${nav.map(([id,icon,name]) => `<button data-go="${id}" class="${page === id ? 'active' : ''}" ${page === id ? 'aria-current="page"' : ''}><span class="ico">${icon}</span>${name}</button>`).join('')}${activityUnit() ? `<button data-action="activity"><span class="ico">📒</span>${safe(tr('活动练习册'))}</button>` : ''}</nav>
     <div class="side-note"><span style="font-size:24px">🌱</span><b>每天一点点</b>听见、认出、勇敢说。<br>跟着自己的节奏就好。</div><button class="parent-button" data-action="parent">⚙ 家长角落</button></aside>
-    <main class="main"><header class="topbar"><div class="crumb">KID’S BOX 1 <b>${unit ? `UNIT ${String(unit.id).padStart(2,'0')} · ${safe(unit.title)}` : 'MY ENGLISH ADVENTURE'}</b></div><div class="topbar-tools">${languagePicker()}<div class="star-pill">${unit ? l10n`✦ ${stars()} / ${maxStars(unit)} 颗星` : tr('✦ 12 个小世界')}</div></div></header>${content}${legalFooter()}</main></div>`;
+    <main class="main"><header class="topbar"><div class="crumb">KID’S BOX ${safe(BOOK.label)} <b>${unit ? `UNIT ${String(unit.id).padStart(2,'0')} · ${safe(unit.title)}` : 'MY ENGLISH ADVENTURE'}</b></div><div class="topbar-tools">${languagePicker()}<div class="star-pill">${unit ? l10n`✦ ${stars()} / ${maxStars(unit)} 颗星` : l10n`✦ ${units.length} 个小世界`}</div></div></header>${content}${legalFooter()}</main></div>`;
 }
 function catalog() {
-  const lastId = readJSON('little-star-last-unit', 1);
+  const lastId = readJSON(LAST_KEY, units[0].id);
   const last = units.find(u => u.id === lastId) || units[0];
   const touched = units.filter(u => { const s = readState(u); return s.seen.length || s.completed.length || s.attempts.length; }).length;
   const resumeUnit = touched ? last : units[0];
-  return shell(l10n`<section class="catalog-hero"><div><div class="eyebrow">A LITTLE ENGLISH, EVERY DAY</div><h1>${safe(displayName())}的英语小世界</h1><p>十二段小冒险，慢慢听、慢慢认、勇敢说。<br>点一个喜欢的单元，就可以出发啦。</p><button class="primary" data-resume="${resumeUnit.id}">${touched ? tr('继续上次的小冒险') : tr('从 Hello 开始')} →</button></div><div class="catalog-art" aria-hidden="true"><span class="orbit o1">🎒</span><span class="orbit o2">🐘</span><span class="orbit o3">🍎</span><div class="catalog-star">✦</div><span class="catalog-sticker">Hello, world!</span></div></section>
-    <div class="section-head"><h2>选一个单元，开始吧</h2><small>${touched ? l10n`已经探索 ${touched} / 12 个单元` : tr('每个单元都有听、认、说')}</small></div>
+  return shell(l10n`<section class="catalog-hero"><div><div class="eyebrow">A LITTLE ENGLISH, EVERY DAY</div><h1>${safe(displayName())}的英语小世界</h1><p>慢慢听、慢慢认、勇敢说。<br>点一个喜欢的单元，就可以出发啦。</p><button class="primary" data-resume="${resumeUnit.id}">${touched ? tr('继续上次的小冒险') : tr('开始小冒险')} →</button></div><div class="catalog-art" aria-hidden="true"><span class="orbit o1">🎒</span><span class="orbit o2">🐘</span><span class="orbit o3">🍎</span><div class="catalog-star">✦</div><span class="catalog-sticker">Hello, world!</span></div></section>
+    <div class="section-head"><h2>选一个单元，开始吧</h2><small>${touched ? l10n`已经探索 ${touched} / ${units.length} 个单元` : tr('每个单元都有听、认、说')}</small></div>
     <section class="unit-grid" aria-label="选择学习单元">${units.map(u => {
       const s = readState(u), total = maxStars(u), words = Object.values(u.groups).reduce((n,g) => n + g.items.length, 0);
       const started = s.seen.length || s.attempts.length || s.completed.length;
@@ -213,16 +241,16 @@ function catalog() {
     }).join('')}</section><div class="notice">🌱 不用一次学完，也不用按顺序解锁。每个单元的星星和练习记录都会分别保存。</div>`);
 }
 function home() {
-  return shell(l10n`<section class="hero" style="background:${unit.tint}"><div class="hero-copy"><div class="eyebrow">OUR LITTLE ADVENTURE · ${String(unit.id).padStart(2,'0')}</div><h1>${unit.id === 1 ? 'Hello, '+safe(displayName())+'！' : safe(unit.title)}</h1><p>${safe(unit.intro)}<br>听一听、找一找，再勇敢说一句。</p><button class="primary" data-action="start">${stars() || state.seen.length ? tr('继续小冒险') : tr('开始小冒险')} <span style="margin-left:16px">→</span></button></div><div class="hero-art"><img src="${unit.hero}" alt="${safe(unit.zhTitle)}教材插图"><div class="floating-label">${unit.emoji} ${safe(unit.zhTitle)}</div></div></section>
+  return shell(l10n`<section class="hero" style="background:${unit.tint}"><div class="hero-copy"><div class="eyebrow">OUR LITTLE ADVENTURE · ${String(unit.id).padStart(2,'0')}</div><h1>${BOOK.id === '1' && unit.id === 1 ? 'Hello, '+safe(displayName())+'！' : safe(unit.title)}</h1><p>${safe(unit.intro)}<br>听一听、找一找，再勇敢说一句。</p><button class="primary" data-action="start">${stars() || state.seen.length ? tr('继续小冒险') : tr('开始小冒险')} <span style="margin-left:16px">→</span></button></div><div class="hero-art"><img src="${unit.hero}" alt="${safe(unit.zhTitle)}教材插图"><div class="floating-label">${unit.emoji} ${safe(unit.zhTitle)}</div></div></section>
     <div class="section-head"><h2>今天的三个小任务</h2><button class="text-button" data-action="home-guide">🔊 听听怎么玩</button></div><section class="path">${[['listen','🎧',tr('听一听'),tr('听声音，找到对应图片'),'01'],['read','🧩',tr('认一认'),tr('看单词，找到对应图片'),'02'],['speak','🎙️',tr('说一说'),tr('跟着示范，试着说一句'),'03']].map(([id,icon,title,desc,n]) => `<button class="lesson" data-go="${id}"><span class="step">${n} / ${id === 'speak' ? tr('说') : id === 'read' ? tr('认') : tr('听')}</span><div class="big-icon">${icon}</div><h3>${title}</h3><p>${desc}</p><span class="arrow">↗</span></button>`).join('')}</section>
     <div class="bottom-note"><div><span class="mini-art">${unit.emoji}</span><b>去故事屋坐坐吧</b><span class="muted">　歌曲、故事，还有你的课本。</span></div><button class="secondary" data-go="library">去看看 →</button></div>
-    <div class="unit-footer"><button class="text-button" data-go="catalog">← 选别的单元</button>${unit.id < 12 ? l10n`<button class="text-button" data-unit="${unit.id+1}">下一个单元：${safe(units[unit.id].title)} →</button>` : tr('<span class="muted">你来到了第十二个小世界 ✦</span>')}</div>`);
+    ${activityEntry()}<div class="unit-footer"><button class="text-button" data-go="catalog">← 选别的单元</button>${nextUnit() ? l10n`<button class="text-button" data-unit="${nextUnit().id}">下一个单元：${safe(nextUnit().title)} →</button>` : tr('<span class="muted">这一册的小世界都在这里 ✦</span>')}</div>`);
 }
 function tabs() {
   return l10n`<div class="tabs" role="group" aria-label="选择主题">${Object.entries(unit.groups).map(([id,g]) => `<button data-group="${id}" class="${group === id ? 'active' : ''}">${safe(g.name)} ${state.completed.includes(page+'-'+id) ? '✓' : ''}</button>`).join('')}</div>`;
 }
 function art(item) {
-  if (item.type === 'number') return `<div class="number-art">${item.number}</div><span class="dots" aria-hidden="true">${'●'.repeat(item.number)}</span>`;
+  if (item.type === 'number') return `<div class="number-art">${item.number}</div><span class="dots" aria-hidden="true">${item.number <= 10 ? '●'.repeat(item.number) : ''}</span>`;
   if (item.type === 'colour') return `<div class="swatch" style="background:${item.hex}" aria-hidden="true"></div>`;
   return `<img class="${item.type === 'person' ? 'portrait' : 'vocab-art'}" src="${item.image}" alt="" loading="lazy">`;
 }
@@ -252,21 +280,21 @@ function nextOptions() {
   feedback = ''; selectedCard = ''; isCorrect = false; quiz.tries = 0;
 }
 function quizView() {
-  if (quiz.done) return shell(l10n`<section class="panel reward"><div class="reward-icon">🌟</div><div class="eyebrow">LITTLE STEPS, BIG SMILES</div><h2>你完成了一个小挑战！</h2><p>这次练习了 ${quiz.items.length} 个词。<br>第一次就找到 ${quiz.firstCorrect} 个，${quiz.retryIds.length ? tr('还有 ')+quiz.retryIds.length+tr(' 个，我们下次再听听。') : tr('给自己一个大大的拥抱！')}</p><div class="notice">这一颗星记录你完成了${quiz.mode === 'read' ? tr('认词') : tr('听音')}练习。多玩几次，会越来越熟悉。</div><button class="primary" data-action="next-task">${quiz.mode === 'listen' ? tr('去认一认') : tr('去说一说')} →</button><button class="secondary" data-action="quiz-again">再玩一次</button></section>`);
+  if (quiz.done) return shell(l10n`<section class="panel reward"><div class="reward-icon">🌟</div><div class="eyebrow">LITTLE STEPS, BIG SMILES</div><h2>你完成了一个小挑战！</h2><p class="completion-feedback">${safe(tr(feedback))}</p><p>这次练习了 ${quiz.items.length} 个词。<br>第一次就找到 ${quiz.firstCorrect} 个，${quiz.retryIds.length ? tr('还有 ')+quiz.retryIds.length+tr(quiz.mode==='read'&&!learningSettings.readQuizAudio ? ' 个，我们下次再看看。' : ' 个，我们下次再听听。') : tr('给自己一个大大的拥抱！')}</p><div class="notice">这一颗星记录你完成了${quiz.mode === 'read' ? tr('认词') : tr('听音')}练习。多玩几次，会越来越熟悉。</div><button class="primary" data-action="next-task">${quiz.mode === 'listen' ? tr('去认一认') : tr('去说一说')} →</button><button class="secondary" data-action="quiz-again">再玩一次</button></section>`);
   const target = quiz.items[quiz.index], listen = quiz.mode === 'listen';
-  return shell(heading(listen ? 'LISTEN & FIND' : 'LOOK & FIND',listen ? tr('听一听，找到它') : tr('看一看，哪个是它？'),l10n`${unit.groups[group].name} · 第 ${quiz.index+1} / ${quiz.items.length} 题`) + l10n`<section class="panel"><div class="quiz-progress"><i style="width:${quiz.index/quiz.items.length*100}%"></i></div><div class="quiz-prompt">${listen ? tr('<button class="audio-orb" data-action="prompt" aria-label="播放英语题目">🔊</button><p class="muted">点喇叭，再选图片</p>') : l10n`<span class="eyebrow">FIND THE PICTURE</span><span class="english">${safe(target.word)}</span><button class="text-button" data-action="prompt">🔊 需要时，听一听</button>`}</div><div class="quiz-options">${quiz.options.map(x => card(x,{hide:true,action:'answer',className:selectedCard === x.id ? (isCorrect ? 'correct' : 'wrong') : ''})).join('')}</div><div class="feedback" role="status" aria-live="polite">${tr(feedback) || tr('慢慢来，可以反复听。')}</div><div class="quiz-next">${isCorrect ? `<button class="primary" data-action="next-question">${quiz.index === quiz.items.length-1 ? tr('完成挑战 ✦') : tr('下一题 →')}</button>` : ''}</div><div class="panel-footer"><button class="text-button" data-action="exit-quiz">← 回到卡片</button><button class="text-button" data-action="quiz-guide">🔊 听说明</button></div></section>`);
+  return shell(heading(listen ? 'LISTEN & FIND' : 'LOOK & FIND',listen ? tr('听一听，找到它') : tr('看一看，哪个是它？'),l10n`${unit.groups[group].name} · 第 ${quiz.index+1} / ${quiz.items.length} 题`) + l10n`<section class="panel"><div class="quiz-progress"><i style="width:${quiz.index/quiz.items.length*100}%"></i></div><div class="quiz-prompt">${listen ? tr('<button class="audio-orb" data-action="prompt" aria-label="播放英语题目">🔊</button><p class="muted">点喇叭，再选图片</p>') : l10n`<span class="eyebrow">FIND THE PICTURE</span><span class="english">${safe(target.word)}</span>${learningSettings.readQuizAudio ? tr('<button class="text-button" data-action="prompt">🔊 需要时，听一听</button>') : ''}`}</div><div class="quiz-options">${quiz.options.map(x => card(x,{hide:true,action:'answer',className:selectedCard === x.id ? (isCorrect ? 'correct' : 'wrong') : ''})).join('')}</div><div class="feedback" role="status" aria-live="polite">${tr(feedback) || tr(!listen&&!learningSettings.readQuizAudio ? '看看单词，再找到对应的图片。' : '慢慢来，可以反复听。')}</div><div class="quiz-next">${isCorrect ? `<button class="primary" data-action="next-question">${quiz.index === quiz.items.length-1 ? tr('完成挑战 ✦') : tr('下一题 →')}</button>` : ''}</div><div class="panel-footer"><button class="text-button" data-action="exit-quiz">← 回到卡片</button><button class="text-button" data-action="quiz-guide">🔊 听说明</button></div></section>`);
 }
 function answer(id) {
   if (!quiz || quiz.done || isCorrect || !quiz.options.some(x => x.id === id)) return;
   selectedCard = id; quiz.tries++; isCorrect = id === quiz.items[quiz.index].id;
   if (isCorrect) {
     if (quiz.tries === 1) quiz.firstCorrect++;
-    feedback = tr('找到了！真棒，继续吧。'); guide(tr('找到了，真棒！'));
+    feedback = feedbackMessage('correct'); guide(feedback);
   } else {
     if (!quiz.retryIds.includes(quiz.items[quiz.index].id)) quiz.retryIds.push(quiz.items[quiz.index].id);
-    feedback = tr('再听听、看看，还可以再试一次。');
+    feedback = feedbackMessage('retry');
     const currentQuiz = quiz, index = quiz.index;
-    guide(tr('再试一次，点小喇叭听一听。'), () => { if (quiz === currentQuiz && quiz.index === index && !isCorrect && page === 'listen') say(quiz.items[index].say); });
+    guide(feedback, () => { if (quiz === currentQuiz && quiz.index === index && !isCorrect && page === 'listen') say(quiz.items[index].say); });
   }
   render();
 }
@@ -278,7 +306,7 @@ function nextQuestion() {
     const id = quiz.mode+'-'+group;
     if (!state.completed.includes(id)) state.completed.push(id);
     state.results.push({mode:quiz.mode,group,firstCorrect:quiz.firstCorrect,total:quiz.items.length,retryIds:[...quiz.retryIds],date:new Date().toISOString()});
-    state.results = state.results.slice(-40); save(); guide(tr('小挑战完成啦！送你一颗小星星。'));
+    state.results = state.results.slice(-40); save(); feedback=feedbackMessage('complete');guide(feedback);
   } else nextOptions();
   render();
   if (!quiz.done && quiz.mode === 'listen') say(quiz.items[quiz.index].say);
@@ -344,7 +372,7 @@ function replayRecord() {
   player.onended = () => {
     if (recordAudio !== player || recordUrl !== file || recordGeneration !== generation || page !== 'speak' || recordPhase !== 'replay') return;
     recordPhase = 'idle'; recordStatus = '可以再按住说一次，也可以点大箭头'; updateRecordUI();
-    guide('勇敢开口，真棒！');
+    recordStatus=encourage('speak');updateRecordUI();
   };
   player.play().catch(() => {
     if (recordAudio !== player || recordUrl !== file || recordGeneration !== generation || page !== 'speak') return;
@@ -424,18 +452,27 @@ function announcePage() {
 function nextPhrase() {
   silence(); clearRecord();
   if (selectedPhrase < phrases().length-1) { selectedPhrase++; render(); playModel(); }
-  else { go('home'); guide('小挑战完成啦！送你一颗小星星。'); }
+  else { go('home'); encourage('complete'); }
 }
 
 function pageCard(n, label = '') {
   return l10n`<button class="book-page" data-book="${n}"><img src="assets/unit-${String(unit.id).padStart(2,'0')}/page-${n}.webp" alt="课本第 ${n} 页" loading="lazy"><span>第 ${n} 页${label ? ' · '+safe(label) : ''} ↗</span></button>`;
 }
+function activityUnit() { return unit && window.LEARNING_ACTIVITY?.units?.[unit.id]; }
+function activityEntry() {
+  if (!activityUnit()) return '';
+  return `<div class="bottom-note activity-entry"><div><span class="mini-art" aria-hidden="true">📒</span><b>${safe(tr('活动练习册'))}</b><span class="muted">　${safe(tr('全屏翻页，点耳机听原声'))}</span></div><button class="secondary" data-action="activity">${safe(tr('打开练习册'))} →</button></div>`;
+}
+function activityLibrary() {
+  const ab=activityUnit();if(!ab)return '';
+  return `<section class="activity-library"><div class="section-head"><h2>📒 ${safe(tr('活动练习册'))} · AB</h2><button class="text-button" data-action="activity-all">${safe(tr('查看整册'))} ↗</button></div><p class="muted">${safe(tr('全屏翻页，点耳机听原声'))} · ${ab.pages.length} ${safe(tr('页'))} · ${ab.tracks.length} ${safe(tr('段配套音频'))}</p><div class="book-pages">${ab.pages.map(n=>`<button class="book-page" data-activity-page="${n}" aria-label="${safe(tr('打开练习册'))} ${n}"><img src="${window.LEARNING_ACTIVITY.pages[n].image}" alt="${safe(tr('活动练习册'))} ${n}" loading="lazy"><span>${safe(tr(n>=94?'语法参考':'活动练习册'))} · ${n} ↗</span></button>`).join('')}</div></section>`;
+}
 function library() {
-  const extras = [unit.clil && {n:unit.clil.page,label:unit.clil.zhTitle},unit.values && {n:unit.values.page,label:unit.values.zhTitle},...unit.reviewPages.map(n => ({n,label:tr('复习')}))].filter(Boolean);
+  const extras = unit.extraPages.map(n => ({n,label:tr('跨学科与复习')}));
   return shell(heading('STORY & SONG TIME',tr('故事屋，欢迎你'),tr('熟悉的教材原声。可以随时暂停、再听一次，也可以跟着一起唱。')) + l10n`<div class="library-grid">${unit.videos.map(v => l10n`<article class="media-card"><div class="media-cover" style="background:${v.id === 'Song' ? '#f6e4ad' : v.id === 'Language' ? '#dceade' : '#e9e2f2'}">${v.emoji}</div><div class="media-info"><h3>${safe(v.title)}</h3><p>${safe(v.description)}</p><button class="secondary" data-video="${v.id}">▷ 打开${v.id === 'Karaoke' ? tr('伴奏') : tr('视频')}</button></div></article>`).join('')}</div>
-    <div class="section-head"><h2>翻翻我的课本</h2><small>Unit ${unit.id} · p.${unit.pages[0]}–${unit.pages.at(-1)}</small></div><div class="book-pages">${unit.pages.map(n => pageCard(n)).join('')}</div>
+    ${activityLibrary()}<div class="section-head"><h2>翻翻我的课本</h2><small>Unit ${unit.id} · p.${unit.pages[0]}–${unit.pages.at(-1)}</small></div><div class="book-pages">${unit.pages.map(n => pageCard(n)).join('')}</div>
     ${extras.length ? l10n`<div class="section-head"><h2>再发现一点点</h2><small>小发现、好习惯和复习</small></div><div class="book-pages">${extras.map(x => pageCard(x.n,x.label)).join('')}</div>` : ''}
-    <div class="section-head"><h2>课本原声小书架</h2><small>${unit.tracks.length} 段原声 · 可以反复听</small></div><div class="audio-list">${unit.tracks.map(t => l10n`<div class="audio-row"><div><b>${safe(t.title)}</b><small>课本 p.${t.page} · 音轨 ${t.id}</small></div><button class="secondary" data-track="${t.id}" aria-label="播放第${t.page}页音轨${t.id}">▷ 听原声</button></div>`).join('')}</div><p class="parent-copy">教材音视频来自你提供的 Kid’s Box New Generation 1 材料。${voiceCredit()}。</p>`);
+    <div class="section-head"><h2>课本原声小书架</h2><small>${unit.tracks.length} 段原声 · 可以反复听</small></div><div class="audio-list">${unit.tracks.map(t => l10n`<div class="audio-row"><div><b>${safe(t.title)}</b><small>${t.page ? 'p.'+t.page : tr('全书主题曲')} · ${tr('音轨')} ${t.id}</small></div><button class="secondary" data-track="${t.id}" aria-label="${safe(tr('播放课本音轨'))} ${t.id}">▷ 听原声</button></div>`).join('')}</div><p class="parent-copy">教材音视频来自你提供的 Kid’s Box New Generation ${safe(BOOK.label)} 材料。${voiceCredit()}。</p>`);
 }
 let lastFocus = null;
 function modal(content, options = {}) {
@@ -466,6 +503,15 @@ function book(n) {
   modal('',{book:true});
   window.LEARNING_BOOK_READER.open($('.modal'),{unit,page:n,tr,safe,locale:I18N.locale,onBeforePlay:silence});
 }
+function activity(n=null,all=false) {
+  const ab=activityUnit(),data=window.LEARNING_ACTIVITY;
+  if(!ab||!window.LEARNING_BOOK_READER)return;
+  const pages=all?Object.keys(data.pages).map(Number):ab.pages;
+  const selected=n===null?ab.firstPage:n;if(!pages.includes(selected))return;
+  const resource={title:'活动练习册',pages,tracks:(all?data.tracks:ab.tracks).map(t=>({...t,title:tr(t.title)})),bookData:data,imageForPage:p=>data.pages[p].image,subtitle:all?'整册练习册':null};
+  modal('',{book:true});
+  window.LEARNING_BOOK_READER.open($('.modal'),{unit,page:selected,tr,safe,locale:I18N.locale,onBeforePlay:silence,resource});
+}
 function legalFooter() {
   const legal=window.LEARNING_LEGAL;
   if(!legal)return '';
@@ -481,14 +527,14 @@ function parent() {
   const recognised = allStates.reduce((n,x) => n+x.s.results.filter(r => r.mode === 'read').length,0);
   const attempts = allStates.reduce((n,x) => n+x.s.attempts.length,0);
   const recent = allStates.flatMap(({u,s}) => s.results.map(r => ({...r,u}))).sort((a,b) => b.date.localeCompare(a.date)).slice(0,6);
-  modal(modalHead(tr('家长角落')) + l10n`<p class="parent-copy">本地版包含 Unit 1–12。每个单元分别保存学习记录；称呼与年龄在所有单元共用。记录保存在当前浏览器，换设备后不会同步。</p><div class="stats"><div class="stat"><strong>${heard}</strong><small>点听过的词卡</small></div><div class="stat"><strong>${recognised}</strong><small>完成认词练习</small></div><div class="stat"><strong>${attempts}</strong><small>尝试过的小句子</small></div></div><label>孩子的称呼<input id="child-name" maxlength="12" value="${safe(profile.name === '小星星' ? '' : profile.name)}" placeholder="${safe(tr('小星星'))}" autocomplete="off"></label><label>年龄（用于 Unit 1 跟读示范）<select id="child-age"><option value="">暂不设置</option>${COURSE.numbers.map(n => l10n`<option value="${n.number}" ${String(profile.age) === String(n.number) ? 'selected' : ''}>${n.number} 岁</option>`).join('')}</select></label><button class="primary" data-action="save-profile">保存设置</button>
+  modal(modalHead(tr('家长角落')) + l10n`<p class="parent-copy">这一册包含 ${units.length} 个学习单元。每个单元分别保存学习记录；称呼与年龄在所有单元共用。记录保存在当前浏览器，换设备后不会同步。</p><div class="stats"><div class="stat"><strong>${heard}</strong><small>点听过的词卡</small></div><div class="stat"><strong>${recognised}</strong><small>完成认词练习</small></div><div class="stat"><strong>${attempts}</strong><small>尝试过的小句子</small></div></div>${readingSettings()}<label>孩子的称呼<input id="child-name" maxlength="12" value="${safe(profile.name === '小星星' ? '' : profile.name)}" placeholder="${safe(tr('小星星'))}" autocomplete="off"></label><label>年龄（用于跟读示范）<select id="child-age"><option value="">暂不设置</option>${COURSE.numbers.map(n => l10n`<option value="${n.number}" ${String(profile.age) === String(n.number) ? 'selected' : ''}>${n.number} 岁</option>`).join('')}</select></label><button class="primary" data-action="save-profile">保存设置</button>
     <h3 style="margin-top:27px">各单元的小脚印</h3><div class="parent-unit-list">${allStates.map(({u,s}) => `<button class="parent-unit-row" data-unit="${u.id}"><span>${u.emoji} Unit ${u.id} · ${safe(u.zhTitle)}</span><b>✦ ${s.completed.length}/${maxStars(u)}</b></button>`).join('')}</div>
     <h3 style="margin-top:27px">最近练习</h3><div class="parent-copy">${recent.length ? recent.map(r => l10n`<p>Unit ${r.u.id} · ${r.mode === 'listen' ? tr('听音找图') : tr('看词找图')} · ${safe(r.u.groups[r.group].name)}：首次答对 ${r.firstCorrect}/${r.total}${r.retryIds.length ? tr('；再练练 ')+r.retryIds.map(id => safe(r.u.groups[r.group].items.find(i => i.id === id)?.word || id)).join('、') : ''}</p>`).join('') : tr('还没有完成的挑战，先让她自由点听也很好。')}</div>
     <div class="notice">录音只在本页回放，不上传。离开说话页面或切换单元即清除。成功录音或点击“我说好啦”会记录一次开口尝试，没有自动发音评分。</div><p class="parent-copy">${voiceCredit()}。故事屋包含本单元教材原声与视频；偶数单元还收录跨学科、品格和对应复习页。平板建议使用 Safari 或 Chrome。</p>${window.LEARNING_ACCESS ? `<button class="secondary" data-action="lock-site">🔒 ${safe(tr('锁定课程入口'))}</button>` : ''}${unit ? l10n`<div class="button-row"><button class="secondary" data-action="reset-ask">重新开始 Unit ${unit.id} 的学习记录</button></div>` : ''}`);
 }
 function markSaid() {
   if (recording || recordPending) { toast(tr('先松开小话筒，再继续')); return; }
-  rememberSpeakingAttempt(); toast(tr('记下了你的勇敢尝试！✦')); guide(tr('勇敢开口，真棒！'));
+  rememberSpeakingAttempt(); const praise=encourage('speak');toast(tr(praise));
   if (selectedPhrase < phrases().length-1) { clearRecord(); selectedPhrase++; }
   render();
 }
@@ -500,9 +546,12 @@ function handle(e) {
   if (b.dataset.group) { navigate(unit.id,page,b.dataset.group); return; }
   if (b.dataset.phrase !== undefined) { silence(); clearRecord(); selectedPhrase=Number(b.dataset.phrase); render(); playModel(); return; }
   if (b.dataset.book) { book(Number(b.dataset.book)); return; }
+  if (b.dataset.activityPage) { activity(Number(b.dataset.activityPage)); return; }
   if (b.dataset.video) { media('video',b.dataset.video); return; }
   if (b.dataset.track) { media('audio',b.dataset.track); return; }
   switch (b.dataset.action) {
+    case 'activity': activity(); break;
+    case 'activity-all': activity(null,true); break;
     case 'start': go(state.last); announcePage(); break;
     case 'home-guide': guide(tr('先听一听，再认一认，最后说一说。点你喜欢的小任务就可以开始。')); break;
     case 'learn': {
@@ -515,7 +564,7 @@ function handle(e) {
     case 'prompt': if (quiz && !quiz.done) say(quiz.items[quiz.index].say); break;
     case 'answer': answer(b.dataset.id); break;
     case 'next-question': nextQuestion(); break;
-    case 'quiz-guide': guide(quiz.mode === 'listen' ? tr('点小喇叭听英语，再选对应的图片。答错可以再试一次。') : tr('看上面的英文，选出对应的图片。需要帮助，可以点听一听。')); break;
+    case 'quiz-guide': guide(quiz.mode === 'listen' ? tr('点小喇叭听英语，再选对应的图片。答错可以再试一次。') : tr(learningSettings.readQuizAudio ? '看上面的英文，选出对应的图片。需要帮助，可以点听一听。' : '看看上面的英文单词，找到对应的图片。')); break;
     case 'exit-quiz': silence(); quiz=null; render(); break;
     case 'quiz-again': startQuiz(); break;
     case 'next-task': go(quiz.mode === 'listen' ? 'read' : 'speak'); announcePage(); break;
@@ -540,7 +589,7 @@ function render() {
   document.documentElement.lang = I18N.locale;
   const description = document.querySelector('meta[name="description"]');
   if (description) description.content = tr('十二个英语小冒险，一起听、认、说。');
-  document.title = unit ? l10n`小星星英语 · Unit ${unit.id} ${unit.title}` : tr('小星星英语 · 单元目录');
+  document.title = unit ? l10n`小星星英语 · ${BOOK.label} · Unit ${unit.id} ${unit.title}` : tr('小星星英语 · 单元目录');
   app.innerHTML = page === 'catalog' ? catalog() : page === 'home' ? home() : page === 'listen' || page === 'read' ? learning() : page === 'speak' ? speak() : library();
   prepareUnitVoices();
 }
@@ -567,6 +616,7 @@ app.addEventListener('keyup',e => {
 app.addEventListener('click',handle);
 app.addEventListener('change', e => { if (e.target.id === 'learning-language') changeLanguage(e.target.value); });
 document.addEventListener('click',e => { if (e.target.closest('.overlay')) handle(e); });
+document.addEventListener('change',e => {if(e.target.id==='read-quiz-audio')setReadQuizAudio(e.target.checked);});
 document.addEventListener('keydown',e => {
   if (e.key === 'Escape') { releaseRecord(true); closeModal(); }
   const overlay=$('.overlay');
